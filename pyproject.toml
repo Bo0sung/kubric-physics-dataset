@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kubric-physics-dataset"
+version = "0.1.0"
+description = "Paired normal/intervened Kubric physics video dataset generator"
+requires-python = ">=3.9"
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["physics_dataset*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
