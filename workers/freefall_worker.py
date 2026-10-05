@@ -13,6 +13,8 @@ import kubric as kb
 from kubric.renderer.blender import Blender
 from kubric.simulator.pybullet import PyBullet
 
+from physics_dataset.trajectory import write_morpheus_trajectory
+
 
 LOGGER = logging.getLogger("freefall_worker")
 EARTH_GRAVITY = -9.81
@@ -243,7 +245,7 @@ def main() -> None:
 
     floor = kb.Cube(
         name="floor", scale=(4.0, 4.0, 0.1), position=(0.0, 0.0, -0.1),
-        static=True, friction=0.5, restitution=0.2,
+        static=True, background=True, friction=0.5, restitution=0.2,
     )
     floor.material = kb.PrincipledBSDFMaterial(color=kb.Color(0.35, 0.38, 0.42))
     scene += floor
@@ -273,11 +275,37 @@ def main() -> None:
     np.savez_compressed(output_dir / "state.npz", **state)
 
     render_keys: list[str] = []
+    trajectory_gt: dict[str, Any] | None = None
+    freefall_trajectory_gt: dict[str, Any] | None = None
     if not args.no_render:
         data_stack = renderer.render()
         render_keys = sorted(data_stack)
         kb.write_image_dict(data_stack, output_dir)
         save_video(data_stack, output_dir, args.fps)
+        trajectory_gt = write_morpheus_trajectory(
+            output_dir / "trajectory_gt.npz",
+            data_stack["segmentation"],
+            data_stack.get("depth"),
+            fps=args.fps,
+            world_position=state["position"],
+            metadata={"source": "kubric_render_gt", "variant": args.variant},
+        )
+        contact_frames = np.flatnonzero(state["contact_ball_floor"])
+        freefall_end = int(contact_frames[0]) if len(contact_frames) else args.frames
+        if freefall_end >= 8:
+            freefall_trajectory_gt = write_morpheus_trajectory(
+                output_dir / "trajectory_freefall_gt.npz",
+                data_stack["segmentation"][:freefall_end],
+                data_stack.get("depth")[:freefall_end] if data_stack.get("depth") is not None else None,
+                fps=args.fps,
+                world_position=state["position"][:freefall_end],
+                metadata={
+                    "source": "kubric_render_gt",
+                    "variant": args.variant,
+                    "segment": "pre_contact_free_fall",
+                    "end_frame_exclusive": freefall_end,
+                },
+            )
         renderer.save_state(output_dir / "scene.blend")
 
     collision_records = []
@@ -310,6 +338,8 @@ def main() -> None:
         # List order corresponds to non-zero instance IDs in the segmentation pass.
         "instances": kb.get_instance_info(scene),
         "render": {"requested_device": args.render_device, "actual_device": actual_render_device, "layers": render_keys},
+        "trajectory_gt": trajectory_gt,
+        "freefall_trajectory_gt": freefall_trajectory_gt,
         "collisions": collision_records,
     }
     kb.write_json(metadata, output_dir / "metadata.json")

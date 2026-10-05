@@ -18,6 +18,8 @@ outputs/scene_000001/
 │   ├── forward_flow/
 │   ├── backward_flow/
 │   ├── state.npz
+│   ├── trajectory_gt.npz
+│   ├── trajectory_freefall_gt.npz
 │   ├── metadata.json
 │   └── scene.blend
 ├── violation/
@@ -32,6 +34,15 @@ outputs/scene_000001/
 - `contact_ball_floor`: 프레임별 접촉 여부
 - `acceleration_valid`: impulse·접촉 주변에서 유한차분 가속도를 제외하기 위한 mask
 - `frame`, `time`
+
+`trajectory_gt.npz`는 렌더된 segmentation mask의 정확한 중심점과 depth를 사용한
+Morpheus ScoreKit 호환 궤적입니다. `object_1` 배열의 shape은 `[T, 3]`, 좌표 순서는
+`[row_y, col_x, depth]`입니다. 즉 RGB에서 SAM2가 추출한 궤적과 simulator GT를 같은
+형식으로 바로 비교할 수 있습니다.
+
+전체 `trajectory_gt.npz`에는 충돌과 반동도 포함됩니다. `trajectory_freefall_gt.npz`는
+`contact_ball_floor`의 첫 접촉 직전까지만 잘라낸 순수 자유낙하 궤적이므로 Morpheus의
+`falling_ball` 식에는 이 파일을 사용해야 합니다.
 
 `metadata.json`에는 카메라 파라미터, segmentation instance 순서, 물체 속성,
 intervention 종류·시작/종료 프레임, 요청 dose와 실제 적용 state, collision event가 기록됩니다. `pair_metrics.json`에는
@@ -129,6 +140,46 @@ docker run --rm --user "$(id -u):$(id -g)" \
 - RGB 기반 trajectory와 GT world trajectory를 함께 평가하되 모델 입력에는 RGB만 줍니다.
 - GT 3D 궤적을 카메라 파라미터로 2D 투영한 oracle score와 RGB 추적 score를 분리하면
   평가식 오류와 tracker 오류를 구분할 수 있습니다.
+
+## 결과를 사용하는 방법
+
+### 1. 궤적 추출기 학습/검증
+
+- 입력: `rgb.mp4`
+- 정답 2D 궤적: 전체 운동은 `trajectory_gt.npz`, 순수 낙하는
+  `trajectory_freefall_gt.npz`의 `object_1`
+- 정답 3D 상태: `state.npz`의 `position`, `velocity`, `acceleration`
+- 보조 supervision: `segmentation/`, `depth/`, optical flow
+
+학습/검증 분할은 같은 seed의 `normal/`과 `violation/`을 분리하지 말고 scene pair 단위로
+나눠야 데이터 누수를 피할 수 있습니다.
+
+### 2. Morpheus 점수 실험
+
+Oracle 자유낙하 점수는 `trajectory_freefall_gt.npz`를 Morpheus ScoreKit에 직접 넣고,
+영상 기반 점수는
+`rgb.mp4`에서 SAM2로 새 궤적을 추출해 계산합니다. 둘의 차이가 tracker 오차이며,
+normal/violation 점수 차이가 물리 위반에 대한 평가기의 민감도입니다.
+
+```bash
+# kubric-physics-dataset과 morpheus-scorekit이 같은 상위 폴더에 있다고 가정
+cd ../morpheus-scorekit
+source .venv/bin/activate
+export PYTHONPATH="$PWD/src"
+
+python -m morpheus_scorekit.cli score \
+  ../kubric-physics-dataset/outputs/scene_000001/normal/trajectory_freefall_gt.npz \
+  --experiment falling_ball \
+  --output-dir outputs/scene_000001/normal_scores \
+  --generated --epochs 10000
+```
+
+### 3. 영상 생성 모델 학습
+
+Morpheus 자체는 이 데이터로 범용 trajectory 모델을 학습하지 않습니다. 별도의 video 또는
+trajectory predictor를 학습한다면 RGB/condition을 입력으로 하고 `state.npz` 또는
+`trajectory_gt.npz`를 supervision으로 사용합니다. Morpheus는 정상/위반 결과를 평가하는
+지표로 두는 것이 맞습니다.
 
 ## 로컬 단위 테스트
 

@@ -13,7 +13,9 @@ def validate_variant(path: Path, expect_render: bool) -> list[str]:
         if not (path / filename).is_file():
             errors.append(f"missing {path / filename}")
     if expect_render:
-        for filename in ("rgb.mp4", "scene.blend"):
+        for filename in (
+            "rgb.mp4", "scene.blend", "trajectory_gt.npz", "trajectory_freefall_gt.npz"
+        ):
             if not (path / filename).is_file():
                 errors.append(f"missing {path / filename}")
     if not (path / "state.npz").is_file():
@@ -32,6 +34,19 @@ def validate_variant(path: Path, expect_render: bool) -> list[str]:
             errors.append("state arrays have inconsistent frame counts")
         elif not np.isfinite(state["position"]).all():
             errors.append("position contains non-finite values")
+    for trajectory_path in (
+        path / "trajectory_gt.npz",
+        path / "trajectory_freefall_gt.npz",
+    ):
+        if not expect_render or not trajectory_path.is_file():
+            continue
+        with np.load(trajectory_path, allow_pickle=False) as trajectory:
+            required = {"fps", "experiment", "object_ids", "object_1", "visibility"}
+            missing = required - set(trajectory.files)
+            if missing:
+                errors.append(f"missing trajectory arrays in {trajectory_path.name}: {sorted(missing)}")
+            elif trajectory["object_1"].shape != (len(trajectory["visibility"]), 3):
+                errors.append(f"{trajectory_path.name} object_1 must have shape [frames, 3]")
     return errors
 
 
@@ -59,4 +74,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
