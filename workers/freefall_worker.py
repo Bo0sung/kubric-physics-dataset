@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-import imageio.v2 as imageio
+import imageio_ffmpeg
 import numpy as np
 
 import kubric as kb
@@ -18,6 +18,21 @@ from physics_dataset.trajectory import write_morpheus_trajectory
 
 LOGGER = logging.getLogger("freefall_worker")
 EARTH_GRAVITY = -9.81
+
+
+def _json_safe(value: Any) -> Any:
+    """Recursively convert NumPy/Kubric values into JSON-native values."""
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return _json_safe(value.tolist())
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -87,7 +102,11 @@ def simulate(
     then writes the collected states to Blender exactly once.
     """
 
-    client = simulator._physics_client  # Pinned Kubric backend; needed for step hooks.
+    # Current Kubric exposes a client wrapper, while the published kubruntu
+    # image uses the older module-global PyBullet connection.
+    client = getattr(simulator, "_physics_client", None)
+    if client is None:
+        import pybullet as client
     client.setTimeStep(1.0 / scene.step_rate)
     steps_per_frame = scene.step_rate // scene.frame_rate
     if steps_per_frame * scene.frame_rate != scene.step_rate:
@@ -215,7 +234,30 @@ def simulate(
 def save_video(data_stack: dict[str, np.ndarray], output_dir: Path, fps: int) -> None:
     rgba = np.asarray(data_stack["rgba"])
     rgb = rgba[..., :3]
-    imageio.mimsave(output_dir / "rgb.mp4", rgb, fps=fps, macro_block_size=None)
+    if np.issubdtype(rgb.dtype, np.floating):
+        scale = 255.0 if float(np.nanmax(rgb)) <= 1.0 else 1.0
+        rgb = np.asarray(np.clip(rgb * scale, 0, 255), dtype=np.uint8)
+    elif rgb.dtype != np.uint8:
+        rgb = np.asarray(np.clip(rgb, 0, 255), dtype=np.uint8)
+    rgb = np.ascontiguousarray(rgb)
+
+    height, width = rgb.shape[1:3]
+    writer = imageio_ffmpeg.write_frames(
+        str(output_dir / "rgb.mp4"),
+        (int(width), int(height)),
+        fps=fps,
+        codec="libx264",
+        pix_fmt_in="rgb24",
+        pix_fmt_out="yuv420p",
+        macro_block_size=1,
+        ffmpeg_log_level="warning",
+    )
+    writer.send(None)
+    try:
+        for frame in rgb:
+            writer.send(np.ascontiguousarray(frame).tobytes())
+    finally:
+        writer.close()
 
 
 def main() -> None:
@@ -342,7 +384,11 @@ def main() -> None:
         "freefall_trajectory_gt": freefall_trajectory_gt,
         "collisions": collision_records,
     }
-    kb.write_json(metadata, output_dir / "metadata.json")
+    # Kubric's old JSON encoder does not handle nested np.float32 scalars.
+    (output_dir / "metadata.json").write_text(
+        json.dumps(_json_safe(metadata), sort_keys=True, indent=4),
+        encoding="utf-8",
+    )
     (output_dir / "_SUCCESS").write_text("ok\n", encoding="utf-8")
     LOGGER.info("Wrote %s", output_dir)
 

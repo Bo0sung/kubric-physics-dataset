@@ -12,11 +12,11 @@ Kubric의 PyBullet + Blender 파이프라인으로 동일 초기조건의 **정�
 outputs/scene_000001/
 ├── normal/
 │   ├── rgb.mp4
-│   ├── rgba/
-│   ├── segmentation/
-│   ├── depth/
-│   ├── forward_flow/
-│   ├── backward_flow/
+│   ├── rgba_00000.png ...
+│   ├── segmentation_00000.png ...
+│   ├── depth_00000.tiff ...
+│   ├── forward_flow_00000.png ...
+│   ├── backward_flow_00000.png ...
 │   ├── state.npz
 │   ├── trajectory_gt.npz
 │   ├── trajectory_freefall_gt.npz
@@ -55,6 +55,10 @@ intervention 종류·시작/종료 프레임, 요청 dose와 실제 적용 state
 - Docker
 - NVIDIA driver
 - NVIDIA Container Toolkit (`docker run --gpus all ...`이 동작해야 함)
+
+일반 Docker와 Rootless Docker를 모두 지원합니다. `generate_pair.sh`가 Docker의
+`rootless` 보안 옵션을 확인해 bind mount의 사용자 인자를 자동으로 선택하므로 스크립트를
+수정하거나 `outputs/` 권한을 완화할 필요가 없습니다.
 
 ```bash
 git clone https://github.com/Bo0sung/kubric-physics-dataset.git
@@ -95,8 +99,10 @@ GPU_ID=0 bash scripts/generate_pair.sh scene_freeze 103 freeze 12 18 0.0
 
 ```bash
 cat outputs/scene_000001/pair_metrics.json
-ls outputs/scene_000001/normal
-ls outputs/scene_000001/violation
+ls -lh outputs/scene_000001/normal/rgb.mp4
+ls -lh outputs/scene_000001/normal/trajectory_freefall_gt.npz
+ls -lh outputs/scene_000001/violation/rgb.mp4
+ls -lh outputs/scene_000001/violation/trajectory_freefall_gt.npz
 ```
 
 같은 intervention으로 seed가 다른 100개 쌍을 순차 생성하려면:
@@ -124,7 +130,11 @@ Blender가 요청한 CUDA/OptiX 장치를 찾지 못하면 worker는 CPU 렌더�
 ## 렌더 없이 physics/GT만 점검
 
 ```bash
-docker run --rm --user "$(id -u):$(id -g)" \
+DOCKER_USER_ARGS=()
+if ! docker info --format '{{json .SecurityOptions}}' | grep -q rootless; then
+  DOCKER_USER_ARGS=(--user "$(id -u):$(id -g)")
+fi
+docker run --rm "${DOCKER_USER_ARGS[@]}" \
   -e PYTHONPATH=/workspace -v "$PWD:/workspace" \
   kubric-physics-dataset:latest \
   /usr/bin/python3 workers/freefall_worker.py \
@@ -149,7 +159,7 @@ docker run --rm --user "$(id -u):$(id -g)" \
 - 정답 2D 궤적: 전체 운동은 `trajectory_gt.npz`, 순수 낙하는
   `trajectory_freefall_gt.npz`의 `object_1`
 - 정답 3D 상태: `state.npz`의 `position`, `velocity`, `acceleration`
-- 보조 supervision: `segmentation/`, `depth/`, optical flow
+- 보조 supervision: `segmentation_*.png`, `depth_*`, optical-flow render pass
 
 학습/검증 분할은 같은 seed의 `normal/`과 `violation/`을 분리하지 말고 scene pair 단위로
 나눠야 데이터 누수를 피할 수 있습니다.
@@ -161,18 +171,22 @@ Oracle 자유낙하 점수는 `trajectory_freefall_gt.npz`를 Morpheus ScoreKit�
 `rgb.mp4`에서 SAM2로 새 궤적을 추출해 계산합니다. 둘의 차이가 tracker 오차이며,
 normal/violation 점수 차이가 물리 위반에 대한 평가기의 민감도입니다.
 
-```bash
-# kubric-physics-dataset과 morpheus-scorekit이 같은 상위 폴더에 있다고 가정
-cd ../morpheus-scorekit
-source .venv/bin/activate
-export PYTHONPATH="$PWD/src"
+두 저장소가 같은 상위 폴더에 있을 때 Morpheus의 전용 스크립트 하나로 normal/violation의
+GT 점수와 SAM2 영상 점수를 모두 계산할 수 있습니다.
 
-python -m morpheus_scorekit.cli score \
-  ../kubric-physics-dataset/outputs/scene_000001/normal/trajectory_freefall_gt.npz \
-  --experiment falling_ball \
-  --output-dir outputs/scene_000001/normal_scores \
-  --generated --epochs 10000
+```bash
+cd ..
+git clone --recurse-submodules https://github.com/Bo0sung/morpheus-scorekit.git
+cd morpheus-scorekit
+bash scripts/setup_gpu_server.sh
+source .venv/bin/activate
+
+EPOCHS=10000 DEVICE=cuda bash scripts/run_kubric_pair.sh \
+  ../kubric-physics-dataset/outputs/scene_000001
 ```
+
+이미 clone한 저장소라면 먼저 `git pull --ff-only`과
+`git submodule update --init --recursive`를 실행해야 최신 `--auto-seed` CLI를 사용합니다.
 
 ### 3. 영상 생성 모델 학습
 
