@@ -17,11 +17,22 @@ fi
 IMAGE="${KUBRIC_IMAGE:-kubric-physics-dataset:latest}"
 GPU_ID="${GPU_ID:-0}"
 RENDER_DEVICE="${RENDER_DEVICE:-CUDA}"
+NO_RENDER="${NO_RENDER:-0}"
+USE_GPU="${USE_GPU:-1}"
+if [[ "$NO_RENDER" == "1" ]]; then
+  # Physics-only sweeps need state.npz, not Blender output. Avoid NVIDIA runtime
+  # setup entirely so this works with rootless Docker and restricted cgroups.
+  USE_GPU=0
+  RENDER_DEVICE=CPU
+fi
 OUTPUT_ROOT="outputs/$SCENE_ID"
 COMMON=(--seed "$SEED" --frames 48 --fps 24 --step-rate 240 --resolution 256 --samples-per-pixel 32 --render-device "$RENDER_DEVICE")
+if [[ "$NO_RENDER" == "1" ]]; then
+  COMMON+=(--no-render)
+fi
 DOCKER_GPU_ARGS=()
 DOCKER_USER_ARGS=()
-if [[ "${USE_GPU:-1}" == "1" ]]; then
+if [[ "$USE_GPU" == "1" ]]; then
   DOCKER_GPU_ARGS=(--gpus "device=$GPU_ID")
 fi
 if ! docker info --format '{{json .SecurityOptions}}' | grep -q 'rootless'; then
@@ -52,8 +63,15 @@ docker run --rm "${DOCKER_USER_ARGS[@]}" \
   --violation-start "$START" \
   --output "$OUTPUT_ROOT/pair_metrics.json"
 
-docker run --rm "${DOCKER_USER_ARGS[@]}" \
-  -e PYTHONPATH=/workspace -v "$ROOT:/workspace" "$IMAGE" \
-  /usr/bin/python3 tools/validate_pair.py "$OUTPUT_ROOT" --violation-start "$START"
+if [[ "$NO_RENDER" == "1" ]]; then
+  docker run --rm "${DOCKER_USER_ARGS[@]}" \
+    -e PYTHONPATH=/workspace -v "$ROOT:/workspace" "$IMAGE" \
+    /usr/bin/python3 tools/validate_pair.py "$OUTPUT_ROOT" \
+      --violation-start "$START" --no-render
+else
+  docker run --rm "${DOCKER_USER_ARGS[@]}" \
+    -e PYTHONPATH=/workspace -v "$ROOT:/workspace" "$IMAGE" \
+    /usr/bin/python3 tools/validate_pair.py "$OUTPUT_ROOT" --violation-start "$START"
+fi
 
 echo "Generated $ROOT/$OUTPUT_ROOT"

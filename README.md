@@ -73,6 +73,17 @@ GPU_ID=0 bash scripts/generate_pair.sh \
   scene_000001 100 gravity_scale 12 18 0.5
 ```
 
+월드 좌표와 물리 state만 필요한 실험은 렌더와 NVIDIA runtime을 생략할 수 있습니다. 이 모드는
+rootless Docker에서 GPU cgroup 권한이 없는 서버에서도 동작합니다.
+
+```bash
+NO_RENDER=1 bash scripts/generate_pair.sh \
+  scene_state_only 100 gravity_scale 12 18 0.5
+```
+
+이 경우 `state.npz`, `metadata.json`, `pair_metrics.json`은 생성되지만 RGB·depth·segmentation과
+Morpheus 영상 trajectory는 생성되지 않습니다.
+
 인자의 의미:
 
 ```text
